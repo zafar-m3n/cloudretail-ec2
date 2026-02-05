@@ -54,17 +54,19 @@ services:
       - "8082:8082"
 
   order-service:
-    build: ./order-service
-    container_name: cloudretail-order-service
-    env_file:
-      - ./order-service/.env
-    environment:
-      CLOUDRETAIL_ORDER_SERVICE_DB_HOST: db
-      CLOUDRETAIL_ORDER_SERVICE_DB_PASSWORD: cloudretail_root
-    depends_on:
-      - db
-    ports:
-      - "8083:8083"
+  build: ./order-service
+  container_name: cloudretail-order-service
+  env_file:
+    - ./order-service/.env
+  environment:
+    CLOUDRETAIL_ORDER_SERVICE_DB_HOST: db
+    CLOUDRETAIL_ORDER_SERVICE_DB_PASSWORD: cloudretail_root
+    AWS_REGION: us-east-1
+    CLOUDRETAIL_ORDER_CONFIRMATION_FROM: "benjaminkirbyten15@gmail.com"
+  depends_on:
+    - db
+  ports:
+    - "8083:8083"
 
   payment-service:
     build: ./payment-service
