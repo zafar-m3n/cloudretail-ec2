@@ -10,17 +10,16 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Health check (for ECS/ALB later)
+// Health check (for ECS / ALB later)
 app.get("/health", (req, res) => {
   res.json({ status: "ok", service: "user-service" });
 });
 
-// Auth-related routes (register, login, profile)
-app.use("/", authRoutes);
-// If you want a prefix later, e.g. app.use("/api/users", authRoutes);
+// Versioned API routes
+app.use("/api/v1/users", authRoutes);
 
 // Start server
-const port = process.env.CLOUDRETAIL_USER_SERVICE_PORT ? Number(process.env.CLOUDRETAIL_USER_SERVICE_PORT) : 4001;
+const port = process.env.CLOUDRETAIL_USER_SERVICE_PORT;
 
 app.listen(port, () => {
   console.log(`User service listening on port ${port}`);
