@@ -14,6 +14,25 @@ export default function Checkout() {
   const [checkoutError, setCheckoutError] = useState(null);
   const [isPlacingOrder, setIsPlacingOrder] = useState(false);
 
+  // Shipping address form
+  const [address, setAddress] = useState({
+    fullName: user?.fullName || user?.full_name || user?.name || "",
+    line1: "",
+    line2: "",
+    city: "",
+    state: "",
+    postalCode: "",
+    country: "Sri Lanka",
+  });
+
+  // Card details form
+  const [card, setCard] = useState({
+    nameOnCard: "",
+    number: "",
+    expiry: "",
+    cvc: "",
+  });
+
   const formatPriceLKR = (value) => {
     if (typeof value !== "number" || Number.isNaN(value)) return "0.00";
     return new Intl.NumberFormat("en-LK", {
@@ -26,64 +45,96 @@ export default function Checkout() {
     navigate("/cart");
   };
 
-  const handlePlaceOrder = async () => {
-    if (!items || items.length === 0) {
+  const handleAddressChange = (field, value) => {
+    setAddress((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleCardChange = (field, value) => {
+    setCard((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const validateForm = () => {
+    if (!items || !items.length) {
       setCheckoutError("Your cart is empty. Add items before checking out.");
-      return;
+      return false;
     }
 
+    if (!address.fullName.trim() || !address.line1.trim() || !address.city.trim() || !address.country.trim()) {
+      setCheckoutError("Please fill in the required shipping address fields.");
+      return false;
+    }
+
+    const rawNumber = card.number.replace(/\s+/g, "");
+    if (!card.nameOnCard.trim() || rawNumber.length < 12 || !card.expiry.trim() || card.cvc.trim().length < 3) {
+      setCheckoutError("Please enter valid card details.");
+      return false;
+    }
+
+    return true;
+  };
+
+  const inferCardBrand = (num) => {
+    const n = num.replace(/\s+/g, "");
+    if (/^4/.test(n)) return "VISA";
+    if (/^5[1-5]/.test(n)) return "MASTERCARD";
+    if (/^3[47]/.test(n)) return "AMEX";
+    return "CARD";
+  };
+
+  const handlePlaceOrder = async () => {
     setCheckoutError(null);
+
+    if (!validateForm()) return;
+
     setIsPlacingOrder(true);
 
     try {
-      // Build order payload from cart
       const orderItems = items.map((item) => ({
         productId: item.id,
         quantity: item.quantity,
         unitPrice: item.price,
       }));
 
+      const rawNumber = card.number.replace(/\s+/g, "");
+      const cardLast4 = rawNumber.slice(-4);
+      const cardBrand = inferCardBrand(rawNumber);
+
+      // Backend: we still only *need* items (and optionally notes).
+      // Extra fields (shippingAddress + paymentMeta) are for UI/assignment purposes.
       const orderPayload = {
         items: orderItems,
-        totalAmount: total,
-        currency: "LKR",
         notes: notes.trim() || undefined,
+        // Optional metadata the backend may ignore, but we keep for realism
+        shippingAddress: address,
+        payment: {
+          method: "CARD",
+          cardBrand,
+          cardLast4,
+        },
       };
 
-      // 1) Create order: POST /api/v1/orders
+      // Single call – backend does stock + payment + order
       const orderResponse = await api.post("/api/v1/orders", orderPayload);
       const orderData = orderResponse.data || {};
-
-      // Handle the actual response shape:
-      // {
-      //   message: "Order created successfully",
-      //   order: { id: 2, ... },
-      //   items: [...]
-      // }
       const orderId = orderData.order?.id || orderData.orderId || orderData.id;
 
       if (!orderId) {
         throw new Error("Order ID missing from response.");
       }
 
-      // 2) Initiate payment: POST /api/v1/payments
-      const paymentPayload = {
-        orderId,
-        amount: total,
-        currency: "LKR",
-      };
-
-      const paymentResponse = await api.post("/api/v1/payments", paymentPayload);
-      const paymentData = paymentResponse.data || {};
-      const paymentStatus = paymentData.status || paymentData.paymentStatus || "SUCCESS";
-
-      if (paymentStatus !== "SUCCESS" && paymentStatus !== "COMPLETED" && paymentStatus !== "PAID") {
-        throw new Error(paymentData.message || "Payment was not successful.");
-      }
-
-      // If we reach here, treat payment as successful
       clearCart();
-      navigate(`/orders/${orderId}`);
+
+      // Pass safe metadata to confirmation page
+      navigate(`/orders/${orderId}`, {
+        state: {
+          shippingAddress: address,
+          payment: {
+            method: "Card",
+            cardBrand,
+            cardLast4,
+          },
+        },
+      });
     } catch (error) {
       console.error("Checkout failed:", error);
       const message =
@@ -94,7 +145,7 @@ export default function Checkout() {
     }
   };
 
-  // Empty cart view (just in case user hits route directly)
+  // Empty cart view (just in case user hits /checkout directly)
   if (!items || items.length === 0) {
     return (
       <div className="flex min-h-[60vh] flex-col items-center justify-center text-center">
@@ -121,7 +172,7 @@ export default function Checkout() {
           <Icon icon="mdi:credit-card-outline" className="h-6 w-6 text-blue-600" />
           <div>
             <h1 className="text-xl font-semibold tracking-wide text-gray-800">Checkout</h1>
-            <p className="text-xs text-gray-500">Review your order and confirm payment.</p>
+            <p className="text-xs text-gray-500">Enter your shipping and payment details to complete the order.</p>
           </div>
         </div>
 
@@ -142,64 +193,175 @@ export default function Checkout() {
       )}
 
       <div className="flex gap-8">
-        {/* Left: Order details / "form" */}
-        <div className="w-2/3 rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
-          <h2 className="mb-4 text-sm font-semibold text-gray-800">Order details</h2>
-
+        {/* LEFT: forms + items */}
+        <div className="w-2/3 space-y-5">
           {/* User summary */}
-          <div className="mb-5 rounded-md border border-gray-100 bg-gray-50 px-4 py-3 text-sm text-gray-800">
-            <div className="mb-1 flex items-center gap-2">
-              <Icon icon="mdi:account-outline" className="h-4 w-4 text-gray-500" />
-              <span>{user?.fullName || user?.full_name || user?.name || "Customer"}</span>
-            </div>
-            <div className="flex items-center gap-2 text-xs text-gray-500">
-              <Icon icon="mdi:email-outline" className="h-3.5 w-3.5 text-gray-400" />
-              <span>{user?.email || "No email available"}</span>
+          <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
+            <h2 className="mb-3 text-sm font-semibold text-gray-800">Customer</h2>
+            <div className="flex items-center gap-3 text-sm text-gray-700">
+              <Icon icon="mdi:account-outline" className="h-5 w-5 text-gray-500" />
+              <div>
+                <div>{user?.fullName || user?.full_name || user?.name || "Customer"}</div>
+                <div className="text-xs text-gray-500">{user?.email || "No email available"}</div>
+              </div>
             </div>
           </div>
 
-          {/* Items preview */}
-          <div className="mb-6">
-            <div className="mb-2 flex items-center justify-between text-xs text-gray-500">
-              <span>Items in this order</span>
-              <span>{items.length} item(s)</span>
+          {/* Shipping address */}
+          <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
+            <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-gray-800">
+              <Icon icon="mdi:map-marker-outline" className="h-4 w-4 text-blue-600" />
+              Shipping address
+            </h2>
+
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <div className="col-span-2">
+                <label className="mb-1 block font-medium text-gray-700">
+                  Full name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={address.fullName}
+                  onChange={(e) => handleAddressChange("fullName", e.target.value)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="col-span-2">
+                <label className="mb-1 block font-medium text-gray-700">
+                  Address line 1 <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={address.line1}
+                  onChange={(e) => handleAddressChange("line1", e.target.value)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  placeholder="Street address, building, etc."
+                />
+              </div>
+
+              <div className="col-span-2">
+                <label className="mb-1 block text-gray-700">Address line 2 (optional)</label>
+                <input
+                  type="text"
+                  value={address.line2}
+                  onChange={(e) => handleAddressChange("line2", e.target.value)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  placeholder="Apartment, floor, etc."
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block font-medium text-gray-700">
+                  City <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={address.city}
+                  onChange={(e) => handleAddressChange("city", e.target.value)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-gray-700">State / Province</label>
+                <input
+                  type="text"
+                  value={address.state}
+                  onChange={(e) => handleAddressChange("state", e.target.value)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-gray-700">Postal code</label>
+                <input
+                  type="text"
+                  value={address.postalCode}
+                  onChange={(e) => handleAddressChange("postalCode", e.target.value)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block font-medium text-gray-700">
+                  Country <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={address.country}
+                  onChange={(e) => handleAddressChange("country", e.target.value)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
             </div>
-            <div className="space-y-2">
-              {items.map((item) => (
-                <div
-                  key={item.id}
-                  className="flex items-center justify-between rounded-md border border-gray-100 bg-gray-50 px-3 py-2 text-xs"
-                >
-                  <div className="flex items-center gap-2">
-                    <div className="h-8 w-8 overflow-hidden rounded-md bg-white">
-                      {item.imageUrl ? (
-                        <img src={item.imageUrl} alt={item.name} className="h-full w-full object-cover" />
-                      ) : (
-                        <div className="flex h-full w-full items-center justify-center text-gray-300">
-                          <Icon icon="mdi:image-off-outline" className="h-4 w-4" />
-                        </div>
-                      )}
-                    </div>
-                    <div>
-                      <p className="font-medium text-gray-800">{item.name || "Product"}</p>
-                      <p className="text-[11px] text-gray-500">
-                        Qty {item.quantity || 1} · LKR {formatPriceLKR(item.price || 0)}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="text-right text-[11px] font-semibold text-gray-800">
-                    LKR {formatPriceLKR((item.price || 0) * (item.quantity || 0))}
-                  </div>
-                </div>
-              ))}
+          </div>
+
+          {/* Payment details */}
+          <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
+            <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-gray-800">
+              <Icon icon="mdi:credit-card-chip-outline" className="h-4 w-4 text-blue-600" />
+              Payment details
+            </h2>
+
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <div className="col-span-2">
+                <label className="mb-1 block font-medium text-gray-700">
+                  Name on card <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={card.nameOnCard}
+                  onChange={(e) => handleCardChange("nameOnCard", e.target.value)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="col-span-2">
+                <label className="mb-1 block font-medium text-gray-700">
+                  Card number <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={card.number}
+                  onChange={(e) => handleCardChange("number", e.target.value)}
+                  placeholder="1234 5678 9012 3456"
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block font-medium text-gray-700">
+                  Expiry (MM/YY) <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={card.expiry}
+                  onChange={(e) => handleCardChange("expiry", e.target.value)}
+                  placeholder="08/27"
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block font-medium text-gray-700">
+                  CVC <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="password"
+                  value={card.cvc}
+                  onChange={(e) => handleCardChange("cvc", e.target.value)}
+                  placeholder="123"
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
             </div>
           </div>
 
           {/* Notes */}
-          <div>
-            <label htmlFor="notes" className="mb-1 block text-xs font-medium text-gray-700">
-              Order notes (optional)
-            </label>
+          <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
+            <h2 className="mb-2 text-sm font-semibold text-gray-800">Order notes (optional)</h2>
             <textarea
               id="notes"
               rows="3"
@@ -211,9 +373,9 @@ export default function Checkout() {
           </div>
         </div>
 
-        {/* Right: Summary + action */}
+        {/* RIGHT: summary + action */}
         <div className="w-1/3 rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
-          <h2 className="mb-4 text-sm font-semibold text-gray-800">Payment summary</h2>
+          <h2 className="mb-4 text-sm font-semibold text-gray-800">Order summary</h2>
 
           <div className="space-y-3 text-sm">
             <div className="flex items-center justify-between">
